@@ -112,7 +112,7 @@ class PimHardwareFaultRecoveryEngine:
                 
         return detected_fault_ranks
 
-    def execute_0ns_hot_plugging_swap(
+       def execute_0ns_hot_plugging_swap(
         self, 
         current_pointers: List[int], 
         fault_ranks: List[int]
@@ -124,28 +124,32 @@ class PimHardwareFaultRecoveryEngine:
         NCCL 분산 컴파일러 그래프 재컴파일 오버헤드 없이, 
         미리 예약 가두기 해둔 예비 백업 뱅크(Spare Address Pool) 주소로 0ns 단위 즉시 스와핑 처리합니다.
         """
-               if not fault_ranks:
-            return current_pointers # 고장 장치가 없다면 기존 주소선 체인을 그대로 유지하여 리턴
+        # [🛠️ V4.0 문법 교정]: 들여쓰기 무결성 정렬(공백 8칸) 완료
+        if not fault_ranks:
+            return current_pointers  # 고장 장치가 없다면 기존 주소선 체인을 그대로 유지하여 리턴
 
         # 기존 주소선 목록을 보존하며 가공하기 위해 딥카피 복제본을 형성합니다.
         patched_device_pointers = list(current_pointers)
         
         print(f"\n[HOT_SWAPPING] 불량 가속기 실리콘 주소선 우회 스와핑 시퀀스를 가동합니다...")
         for fault_rank in fault_ranks:
-            # 해당 불량 장치 전용 백업 풀에서 사용 가능한 예비 주소선 한 개를 Pop하여 가로챕니다.
-            if not self.spare_hardware_address_pool[fault_rank]:
+            # [🛡️ V4.0 방어 코드 주입]: 예비 백업 풀 사전의 Key 고갈 및 누수 상태 사전 차단
+            spare_pool = self.spare_hardware_address_pool.get(fault_rank, [])
+            
+            # [🛠️ V4.0 예외 처리 대수술]: 경고에 그치는 ResourceWarning을 도살하고 시스템을 확실히 종료시키는 RuntimeError로 변경
+            if not spare_pool:
                 print(f" [FATAL] Rank {fault_rank}의 비상 우회로 전용 예비 주소 풀이 고갈되었습니다!", file=sys.stderr)
                 print(f"         하드웨어 결함 허용 한계 초과로 클러스터를 안전 강제 종료합니다.", file=sys.stderr)
-                raise ResourceWarning(f"[CLUSTER_COLLAPSE] Spare hardware address pool exhausted at Rank {fault_rank}")
+                raise RuntimeError(f"[CLUSTER_COLLAPSE] Spare hardware address pool exhausted at Rank {fault_rank}")
             
-            # 예비 주소선 추출 및 핫플러깅 대체 단행
+            # 예비 주소선 추출 및 핫플러깅 대체 단행 (이제 IndexError 없이 안전하게 Pop됩니다)
             old_fault_address = patched_device_pointers[fault_rank]
-            new_spare_address = self.spare_hardware_address_pool[fault_rank].pop(0)
+            new_spare_address = spare_pool.pop(0)
             
             # 💥 [핵심 바이패스 스와프]: 전체 분산 텐서 그래프를 파괴하지 않고, 오직 해당 랭크의 원격 포인터 지향점만 교체합니다.
             # 이 조치를 통해 하부 C++ 커널의 __activemask()가 0ns 무중단으로 새 주소 세그먼트를 즉시 참조합니다.
             patched_device_pointers[fault_rank] = new_spare_address
-            self.cluster_health_registry[fault_rank] = 0 # 헬스 레지스트리를 정상태(Recovered)로 초기화 복구
+            self.cluster_health_registry[fault_rank] = 0  # 헬스 레지스트리를 정상태(Recovered)로 초기화 복구
             
             print(f" ├─ [Rank {fault_rank} 물리 복구 완료]")
             print(f" │   ├── 💥 파괴된 기존 물리 주소 : {hex(old_fault_address)}")

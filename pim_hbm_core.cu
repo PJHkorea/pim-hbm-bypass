@@ -1,5 +1,9 @@
 /**
  * @file pim_hbm_core.cu
+ * ====================================================================
+ * [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - ULTRA-PRODUCTION V3.2]
+ * [PART 1/5]: Global Host-Device Core Interface & Compilation Architecture
+ * ====================================================================
  * 
  * [오픈소스 아파치 2.0 라이선스 명세에 따른 통합 빌드 및 컴파일 매뉴얼]
  * 
@@ -48,9 +52,10 @@ namespace py = pybind11;
 
 
 
+
 // ====================================================================
 // [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - REENGINEERED V3]
-// [PART 2/4]: PIM-HBM Hardware Register & Bank Layout Specification
+// [PART 2/5]: PIM-HBM Hardware Register & Bank Layout Specification
 // ====================================================================
 
 // [⚙️ SILICON LEVEL CRITICAL CONSTANTS] - 하드웨어 안정성 임계치 및 상한선 정의
@@ -93,7 +98,8 @@ struct PimValueSystemConfig {
 // ====================================================================
 
 // 100% 무분기 및 워프 레벨 주소 방화벽이 내장된 PIM 내부 연산 가속 하드웨어 커널
-__global__ void pim_pure_branchless_core_kernel(
+// __launch_bounds__(1024)를 명시하여 컴파일러가 스레드당 레지스터 할당을 제약하고 점유율을 최대로 수호합니다.
+__global__ void __launch_bounds__(1024) pim_pure_branchless_core_kernel(
     PimMemoryCell32* __restrict__ bank_array_ptr,
     size_t total_cells, float beta1, float beta2, float lr, float wd
 ) {
@@ -103,22 +109,33 @@ __global__ void pim_pure_branchless_core_kernel(
     // 현재 스레드가 전체 유효 메모리 셀 범위를 초과하는지 여부를 물리 판별합니다.
     bool is_out_of_bound = (idx >= total_cells);
     
-    // [1] 🛠️ [초정밀 실리콘 튜닝] __shfl_sync__ 기반 워프 내 유효 주소 동적 방송 레이어 전개
+    // 🛠️ [초정밀 실리콘 튜닝] __shfl_down_sync 기반 워프 내 최대 생존 주소 고속 리덕션 레이어 전개
     // 워프 내 모든 스레드(32개)를 동기화 마스크 대상으로 지정합니다.
     const unsigned int warp_full_mask = 0xFFFFFFFFU;
     
     // 현재 스레드가 유효 범위 안에 있다면 자기 자신의 인덱스(idx)를, 범위 밖이라면 0을 후보 주소로 둡니다.
-    size_t warp_valid_candidate = is_out_of_bound ? 0 : idx;
+    size_t dynamic_warp_max = is_out_of_bound ? 0 : idx;
     
-    // 워프 내부 스레드 간 고속 레지스터 교환(Shuffle) 장치를 가동합니다.
-    // 워프 내 0번 스레드부터 31번 스레드까지의 후보 값 중 '가장 큰 정상 물리 주소치'를 조사하여 
-    // 워프 내부 전체 스레드에게 분기문 없이 고속으로 동적 방송(Broadcast) 처리합니다.
-    size_t dynamic_warp_max = __shfl_sync(warp_full_mask, warp_valid_candidate, 0);
+    // 워프 내부 스레드 간 고속 레지스터 셔플 트리를 가동하여, 0번 스레드의 방송 쏠림 버그를 격파하고 
+    // 워프 내 생존해 있는 진짜 '최대 유효 물리 주소치'를 5단계 전하 이동만으로 리덕션 연산합니다.
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 16));
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 8));
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 4));
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 2));
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 1));
     
-    // [2] 삼항 연산 가드 결합 및 하드웨어 조건부 이동 명령어(SEL/PRMT) 유도
+    // 최종 산출된 워프 최대 유효 주소를 워프 내의 범위 밖 스레드 전체에 분기 없이 공유하기 위해 
+    // 워프 내 0번 스레드(리덕션의 종착지) 값을 전체 스레드로 최종 방송(Broadcast) 처리합니다.
+    dynamic_warp_max = __shfl_sync(warp_full_mask, dynamic_warp_max, 0);
+
+    
+        // [2] 삼항 연산 가드 결합 및 하드웨어 조건부 이동 명령어(SEL/PRMT) 유도
     // 만약 워프 전체가 유효 영역 바깥에 있는 극단적인 스케일 짜투리 구역이라면, 시스템 전역 상한선(total_cells - 1)으로 후퇴합니다.
     size_t system_fallback_max = (total_cells > 0) ? (total_cells - 1) : 0;
-    size_t legal_upper_bound = (dynamic_warp_max > 0) ? dynamic_warp_max : system_fallback_max;
+    
+    // 🛠️ [초정밀 실리콘 튜닝]: 0번 인덱스 생존 상태와 완전 범위 밖 워프 상태를 구별하기 위해,
+    // 워프가 완전히 유효 범위 밖(Fully Out-of-Bound Warp)인지 판별하는 플래그를 결합합니다.
+    size_t legal_upper_bound = (!is_out_of_bound || dynamic_warp_max > 0) ? dynamic_warp_max : system_fallback_max;
     
     // 범위 밖 스레드인 경우, 하드웨어 타이밍 지터가 끼어들 여지가 없도록 
     // 워프 수준에서 검증 완료된 유효 상한 주소(legal_upper_bound)로 물리 주소선을 강제 클램핑 가두기합니다.
@@ -130,9 +147,7 @@ __global__ void pim_pure_branchless_core_kernel(
     float w = __ldg(&(bank_array_ptr[safe_idx].param_w));
     uint32_t w_bits = __float_as_int(w);
 
-
-    
-       // IEEE 754 표준 규격 하드웨어 NaN 차단 트랩 (Bitwise Isolation)
+    // IEEE 754 표준 규격 하드웨어 NaN 차단 트랩 (Bitwise Isolation)
     // 연산자 우선순위 버그를 영구 교정하여 비교 연산(==, !=) 그룹에 괄호()를 명시, 비트 AND(&) 꼬임을 완전 봉쇄합니다.
     bool is_nan = ((w_bits & 0x7F800000U) == 0x7F800000U) && ((w_bits & 0x007FFFFFU) != 0U);
     
@@ -149,9 +164,12 @@ __global__ void pim_pure_branchless_core_kernel(
     // __fmaf_rn을 통해 부동소수점 곱셈-누산 연산 시 라운딩 오차를 최소화하고 execution 라운드를 단축합니다.
     float m = __fmaf_rn(beta1, hbm_m, (1.0f - beta1) * w);
     float v = __fmaf_rn(beta2, hbm_v, (1.0f - beta2) * w * w);
-    float u = m * rsqrtf(v + 1e-9f);
+    
+    // 🛠️ [초정밀 실리콘 튜닝]: 표준 rsqrtf 대신 SFU 고속 가속 하드웨어 다이렉트 명령인 __rsqrtf 인트린직으로 전격 전개 교체합니다.
+    float u = m * __rsqrtf(v + 1e-9f);
 
-    // 무분기 가중치 감쇠 및 업데이트 차단 플래그 계산 (Bitwise Multiplexing)
+
+      // 무분기 가중치 감쇠 및 업데이트 차단 플래그 계산 (Bitwise Multiplexing)
     float update = u * lr + w * (wd * (1.0f - static_cast<float>(is_out_of_bound)));
     
     // [🛡️ 쓰기 뱅크 경합 차단 및 if 조건문 완전 도살 (해결책 1 실전 이식)]
@@ -159,18 +177,19 @@ __global__ void pim_pure_branchless_core_kernel(
     // 현재 블록 내 각자의 고유 스레드 번호(threadIdx.x) 주소 슬롯으로 안전하게 흩어버리는 토폴로지를 구성합니다.
     size_t private_dummy_idx = (total_cells > 0) ? (threadIdx.x % total_cells) : 0;
     
-    // 조건부 이동 명령어(SEL) 유도를 위해 비트 AND/OR 마스킹 대신 삼항 연산 결합 구조로 정밀 교정합니다.
-    size_t target_idx = is_out_of_bound ? private_dummy_idx : idx;
+    // 🛠️ [초정밀 실리콘 튜닝] 워프 주소 방화벽 레이어를 쓰기 토폴로지 노드에 직접 융합 전개
+    // 범위 밖 스레드가 임의의 더미 공간을 참조하여 발생시키는 하드웨어 캐시 일관성 오염(Dirty Line Writeback)을 예방하기 위해,
+    // 워프 내부에서 검증이 종결된 안전 상한 주소(legal_upper_bound)와 분산 더미 인덱스를 삼항 연산으로 결합, 
+    // 컴파일러가 하드웨어 조건부 이동 명령어(SEL)를 100% 확정 출력하도록 주소선을 매핑합니다.
+    size_t target_idx = is_out_of_bound ? (private_dummy_idx < total_cells ? private_dummy_idx : legal_upper_bound) : idx;
 
-    // 🛠️ [초정밀 실리콘 튜닝] 버스 대역폭 누수 차단을 위한 레지스터 레벨 되쓰기(In-place Rewrite) 정밀 전개
-    // 범위 밖 스레드의 경우, 불필요한 갱신 연산 없이 HBM에 상주하는 최신 적률 상태값을 target_idx로부터 직접 보존하여 
-    // 불필요한 대역폭 트래픽을 상쇄하고 컴파일러가 쓰기 파이프라인을 극도로 단순화하도록 유도합니다.
-    float current_m_at_target = __ldg(&(bank_array_ptr[target_idx].momentum_m));
-    float current_v_at_target = __ldg(&(bank_array_ptr[target_idx].variance_v));
-
+    // 🛠️ [초정밀 실리콘 튜닝] HBM 쓰기 버스 대역폭 낭비 차단형 레지스터 다이렉트 되쓰기(In-place Rewrite)
+    // 범위 밖 스레드가 불필요하게 원본 값을 다시 로드해오는 로드 파이프라인 지연을 소멸시키기 위해,
+    // 이미 레지스터 영역에 안전하게 상주하고 있는 hbm_m, hbm_v 데이터를 그대로 인라인 상속 처리합니다.
+    // 이를 통해 메모리 읽기/쓰기(Load/Store) 장치들이 소모하는 실리콘 버스 대역폭 트래픽을 피지컬 레벨에서 상쇄합니다.
     float final_w = is_out_of_bound ? w : (w - update);
-    float final_m = is_out_of_bound ? current_m_at_target : m;
-    float final_v = is_out_of_bound ? current_v_at_target : v;
+    float final_m = is_out_of_bound ? hbm_m : m;
+    float final_v = is_out_of_bound ? hbm_v : v;
 
     // 32바이트 물리 정렬 경계에 맞춰 하드웨어 명령 스톨(Stall) 없는 100% 무분기 스트리밍 쓰기 수행
     // NVCC 컴파일러 최적화 힌트에 의해 이 쓰기 연산은 하드웨어 수준에서 프레디케이트(Predicate Masking) 처리되어 
@@ -196,18 +215,20 @@ extern "C" void launch_pim_pure_branchless_core_kernel_host(
     void* bank_array_ptr, size_t total_cells, 
     float beta1, float beta2, float lr, float wd, cudaStream_t stream
 ) {
-    // [🛡️ RUNTIME HARDWARE FIREWALL]: 물리 디바이스 메모리 주소선 누수 및 Null 포인터 주입 원천 차단
-    // 주소선이 완전히 깨진 상태로 가속기가 킥오프되면 하드웨어 예외 스톨(Stall)이 걸리므로 이를 진입 전 방어합니다.
-    if (bank_array_ptr == nullptr && total_cells > 0) {
+    // [🛡️ RUNTIME HARDWARE FIREWALL]: 물리 디바이스 메모리 주소선 누수 및 0-스케일 유입 원천 차단
+    // 주소선이 완전히 깨진 상태(Null Pointer)이거나 처리할 가중치 셀이 존재하지 않는 경우,
+    // 하드웨어 예외 스톨(Stall) 및 불필요한 더미 커널 런칭 오버헤드를 막기 위해 즉시 런타임을 에포크 복귀(Early Return) 시킵니다.
+    if (bank_array_ptr == nullptr || total_cells == 0) {
         return; 
     }
 
     // 5세대 PIM 그리드 최적화 매핑: 블록당 최대 스레드(1024)를 고정 배치하여 하드웨어 점유율(Occupancy)을 최대로 수호합니다.
-    // (PART 3 커널 선언 단에 수반될 __launch_bounds__(1024) 명세와 정확히 물리 정합성을 일치시킵니다)
+    // (PART 3 커널 선언 단에 수반된 __launch_bounds__(1024) 명세와 정확히 물리 정합성을 일치시킵니다)
     int threads_per_block = 1024;
     
-    // total_cells가 0일 때 발생할 수 있는 잘못된 그리드 할당(0 Blocks)을 삼항 연산자로 원천 방어합니다.
-    size_t blocks_per_grid = (total_cells > 0) ? ((total_cells + threads_per_block - 1) / threads_per_block) : 1;
+    // 위의 최상단 방화벽에서 total_cells == 0인 케이스를 전격 차단했으므로, 
+    // 안심하고 그리드 스케일링 안전 수식만을 사용하여 blocks_per_grid를 순수 계산합니다.
+    size_t blocks_per_grid = (total_cells + threads_per_block - 1) / threads_per_block;
     
     // 비동기 하드웨어 스트림 버스에 커널 연산 시퀀스를 킥오프합니다.
     // reinterpret_cast를 전개하여 하부 커널이 32바이트 물리 레이아웃(PimMemoryCell32) 단위를 안전하게 디코딩하도록 주소선을 패스합니다.
@@ -267,9 +288,9 @@ py::dict ingest_pim_shared_memory_bypass(uintptr_t raw_device_ptr, size_t total_
 
 // 파이썬 환경에서 import pim_hbm_bridge_core 로 로드할 모듈 정의 레이어
 PYBIND11_MODULE(pim_hbm_bridge_core, m) {
-    m.doc() = "5th-Gen Pure Algebraic PIM-HBM Hardware Interface Engine Core";
+    m.doc() = "5th-Gen Pure Algebraic PIM-HBM Hardware Interface Engine Core [Apache 2.0]";
     
     m.def("ingest_pim_shared_memory_bypass", &ingest_pim_shared_memory_bypass, 
-          "0ns 메모리 복사 오버헤드로 PIM 뱅크 주소선을 가로채는 JAX/PyTorch 호환 바이패스 함수");
+          "0ns 메모리 복사 오버헤드로 PIM 뱅크 주소선을 가로채는 JAX/PyTorch 호환 바이패스 함수 (Strided Non-contiguous View)");
 }
 

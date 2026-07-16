@@ -1,9 +1,5 @@
 /**
  * @file pim_hbm_core.cu
- * ====================================================================
- * [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - REENGINEERED V3]
- * [PART 1/4]: Global Host-Device Core Interface & Compilation Architecture
- * ====================================================================
  * 
  * [오픈소스 아파치 2.0 라이선스 명세에 따른 통합 빌드 및 컴파일 매뉴얼]
  * 

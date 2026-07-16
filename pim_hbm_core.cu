@@ -1,7 +1,7 @@
 /**
  * @file pim_hbm_core.cu
  * ====================================================================
- * [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - ULTRA-PRODUCTION V3.2]
+ * [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - ULTRA-PRODUCTION V4.0]
  * [PART 1/5]: Global Host-Device Core Interface & Compilation Architecture
  * ====================================================================
  * 
@@ -18,9 +18,10 @@
  *   import pim_hbm_bridge_core
  */
 
+
 // ====================================================================
-// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - PRODUCTION V3.1]
-// [PART 1/4]: Global Host-Device Core Interface & Compilation Architecture
+// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - ULTRA-PRODUCTION V4.0]
+// [PART 1/5]: Global Host-Device Core Interface & Compilation Architecture
 // ====================================================================
 
 // [⚙️ HARDWARE RUNTIME HEADERS] - 물리 디바이스 제어 및 스트리밍 엔진 인클루드
@@ -54,7 +55,7 @@ namespace py = pybind11;
 
 
 // ====================================================================
-// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - REENGINEERED V3]
+// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - ULTRA-PRODUCTION V4.0]
 // [PART 2/5]: PIM-HBM Hardware Register & Bank Layout Specification
 // ====================================================================
 
@@ -93,7 +94,7 @@ struct PimValueSystemConfig {
 
 
 // ====================================================================
-// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - REENGINEERED V3]
+// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - ULTRA-PRODUCTION V4.0]
 // [PART 3/5]: Pure Branchless PIM Internal Mathematical Acceleration Kernel
 // ====================================================================
 
@@ -109,31 +110,34 @@ __global__ void __launch_bounds__(1024) pim_pure_branchless_core_kernel(
     // 현재 스레드가 전체 유효 메모리 셀 범위를 초과하는지 여부를 물리 판별합니다.
     bool is_out_of_bound = (idx >= total_cells);
     
-    // 🛠️ [초정밀 실리콘 튜닝] __shfl_down_sync 기반 워프 내 최대 생존 주소 고속 리덕션 레이어 전개
-    // 워프 내 모든 스레드(32개)를 동기화 마스크 대상으로 지정합니다.
-    const unsigned int warp_full_mask = 0xFFFFFFFFU;
+    // 🛠️ [V4.0 초정밀 실리콘 동기화 튜닝]: 고정 마스크 대신 __activemask() 인트린직 가동
+    // 특정 물리 뱅크 고장으로 일부 스레드가 폭사해도, 정상 생존해 있는 스레드 비트맵만 동적으로 낚아채어 
+    // 하드웨어 레벨의 비동기 예외 스톨 및 영구 데드락(Stall) 유발을 피지컬 레벨에서 전격 소멸시킵니다.
+    const unsigned int warp_active_mask = __activemask();
     
     // 현재 스레드가 유효 범위 안에 있다면 자기 자신의 인덱스(idx)를, 범위 밖이라면 0을 후보 주소로 둡니다.
     size_t dynamic_warp_max = is_out_of_bound ? 0 : idx;
     
     // 워프 내부 스레드 간 고속 레지스터 셔플 트리를 가동하여, 0번 스레드의 방송 쏠림 버그를 격파하고 
     // 워프 내 생존해 있는 진짜 '최대 유효 물리 주소치'를 5단계 전하 이동만으로 리덕션 연산합니다.
-    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 16));
-    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 8));
-    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 4));
-    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 2));
-    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_full_mask, dynamic_warp_max, 1));
+    // 0xFFFFFFFFU 마스크 대신 동적으로 튜닝된 warp_active_mask를 관통 매핑합니다.
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_active_mask, dynamic_warp_max, 16));
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_active_mask, dynamic_warp_max, 8));
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_active_mask, dynamic_warp_max, 4));
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_active_mask, dynamic_warp_max, 2));
+    dynamic_warp_max = max(dynamic_warp_max, __shfl_down_sync(warp_active_mask, dynamic_warp_max, 1));
     
     // 최종 산출된 워프 최대 유효 주소를 워프 내의 범위 밖 스레드 전체에 분기 없이 공유하기 위해 
     // 워프 내 0번 스레드(리덕션의 종착지) 값을 전체 스레드로 최종 방송(Broadcast) 처리합니다.
-    dynamic_warp_max = __shfl_sync(warp_full_mask, dynamic_warp_max, 0);
+    dynamic_warp_max = __shfl_sync(warp_active_mask, dynamic_warp_max, 0);
+
 
     
         // [2] 삼항 연산 가드 결합 및 하드웨어 조건부 이동 명령어(SEL/PRMT) 유도
     // 만약 워프 전체가 유효 영역 바깥에 있는 극단적인 스케일 짜투리 구역이라면, 시스템 전역 상한선(total_cells - 1)으로 후퇴합니다.
     size_t system_fallback_max = (total_cells > 0) ? (total_cells - 1) : 0;
     
-    // 🛠️ [초정밀 실리콘 튜닝]: 0번 인덱스 생존 상태와 완전 범위 밖 워프 상태를 구별하기 위해,
+    // 0번 인덱스 생존 상태와 완전 범위 밖 워프 상태를 구별하기 위해,
     // 워프가 완전히 유효 범위 밖(Fully Out-of-Bound Warp)인지 판별하는 플래그를 결합합니다.
     size_t legal_upper_bound = (!is_out_of_bound || dynamic_warp_max > 0) ? dynamic_warp_max : system_fallback_max;
     
@@ -169,13 +173,16 @@ __global__ void __launch_bounds__(1024) pim_pure_branchless_core_kernel(
     float u = m * __rsqrtf(v + 1e-9f);
 
 
-      // 무분기 가중치 감쇠 및 업데이트 차단 플래그 계산 (Bitwise Multiplexing)
+
+          // 무분기 가중치 감쇠 및 업데이트 차단 플래그 계산 (Bitwise Multiplexing)
     float update = u * lr + w * (wd * (1.0f - static_cast<float>(is_out_of_bound)));
     
     // [🛡️ 쓰기 뱅크 경합 차단 및 if 조건문 완전 도살 (해결책 1 실전 이식)]
     // 범위 밖 스레드들이 0번 주소에 동시에 써서 발생시키는 하드웨어 직렬화(Serialization)를 영구 예방하기 위해,
     // 현재 블록 내 각자의 고유 스레드 번호(threadIdx.x) 주소 슬롯으로 안전하게 흩어버리는 토폴로지를 구성합니다.
-    size_t private_dummy_idx = (total_cells > 0) ? (threadIdx.x % total_cells) : 0;
+    // 🛠️ [V4.0 초정밀 실리콘 동기화 튜닝]: 40억 개 이상의 초거대 물리 셀 구역 스캔 시 발생할 수 있는 
+    // 잠재적인 부호 확장(Sign Extension) 누수를 원천 차단하기 위해 static_cast<size_t>로 명시적 레지스터 확정을 단행합니다.
+    size_t private_dummy_idx = (total_cells > 0) ? (static_cast<size_t>(threadIdx.x) % total_cells) : 0;
     
     // 🛠️ [초정밀 실리콘 튜닝] 워프 주소 방화벽 레이어를 쓰기 토폴로지 노드에 직접 융합 전개
     // 범위 밖 스레드가 임의의 더미 공간을 참조하여 발생시키는 하드웨어 캐시 일관성 오염(Dirty Line Writeback)을 예방하기 위해,
@@ -199,9 +206,8 @@ __global__ void __launch_bounds__(1024) pim_pure_branchless_core_kernel(
     bank_array_ptr[target_idx].variance_v = final_v;
 }
 
-
 // ====================================================================
-// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - REENGINEERED V3]
+// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - ULTRA-PRODUCTION V4.0]
 // [PART 4/5]: External Host Bridge C-Wrapper Implementation
 // ====================================================================
 
@@ -241,7 +247,7 @@ extern "C" void launch_pim_pure_branchless_core_kernel_host(
 
 
 // ====================================================================
-// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - REENGINEERED V3]
+// [AOT-WARMUP INTEGRATED HARDWARE RUNTIME SYSTEM - ULTRA-PRODUCTION V4.0]
 // [PART 5/5]: 0ns Memory Copy Host Orchestrator & Python Ingestion Wrapper
 // ====================================================================
 
@@ -286,11 +292,12 @@ py::dict ingest_pim_shared_memory_bypass(uintptr_t raw_device_ptr, size_t total_
     return wrapper;
 }
 
+// 🛠️ [V4.0 초정밀 문서화 튜닝]: Python 파트와 호환되도록 모듈 도큐먼트 버전 명세를 V4 표준본으로 일치화
 // 파이썬 환경에서 import pim_hbm_bridge_core 로 로드할 모듈 정의 레이어
 PYBIND11_MODULE(pim_hbm_bridge_core, m) {
-    m.doc() = "5th-Gen Pure Algebraic PIM-HBM Hardware Interface Engine Core [Apache 2.0]";
+    m.doc() = "5th-Gen Pure Algebraic PIM-HBM Hardware Interface Engine Core [Apache 2.0 - ULTRA-PRODUCTION V4.0]";
     
     m.def("ingest_pim_shared_memory_bypass", &ingest_pim_shared_memory_bypass, 
-          "0ns 메모리 복사 오버헤드로 PIM 뱅크 주소선을 가로채는 JAX/PyTorch 호환 바이패스 함수 (Strided Non-contiguous View)");
+          "0ns 메모리 복사 오버헤드로 PIM 뱅크 주소선을 가로채는 JAX/PyTorch 호환 바이패스 함수 (Strided Non-contiguous View V4)");
 }
 

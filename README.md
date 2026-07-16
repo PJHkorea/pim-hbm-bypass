@@ -23,7 +23,8 @@
 - **`pim_hardware_gate.py`**: `ShapeDtypeStruct` 가상 추상화 트레이서를 활용해 실재 VRAM 점유 0MB 상태로 XLA 컴파일러 기계어를 영구 고정하는 예열 및 미분 사슬 절연 레이어 (Python/JAX)
 - **`topology_sharding.py`**: 대규모 클러스터 노드별 VRAM 물리 주소선을 가로채어 제로카피 `NamedSharding` 글로벌 분산 매트릭스 뷰를 수립하는 거시적 토폴로지 관제탑 (Python/JAX)
 - **`hardware_fault_recovery.py`**: 분산 가중치 행렬 내 불량 뱅크 백그라운드 스캔 및 비상 백업 풀 주소선을 활용한 실시간 무중단 핫플러깅 스와프 엔진 (Python/JAX)
-- **`hardware_fault_recovery_distributed.py` (🆕)**: 초대형 가속기 인프라를 위한 NCCL All-Reduce 와이어 레벨 융합 집산(Collective) 스캔 및 `np.flatnonzero` 벡터화 결함 적출 복구 엔진 (Python/JAX)
+- **`hardware_fault_recovery_distributed.py`**: 초대형 인프라를 위한 NCCL All-Reduce 와이어 레벨 융합 집산(Collective) 스캔 및 `np.flatnonzero` 벡터화 결함 적출 복구 엔진 (Python/JAX)
+- **`llama3_layer_adapter.py` (🆕)**: Llama-3-8B 고유 차원(4096 / 14336) 직통 0ns 주소 인입 및 무분기 결함 허용 순방향 훈련/추론 버스 어댑터 플러그인 (Python/JAX)
 
 ---
 
@@ -52,8 +53,10 @@ python3 topology_sharding.py
 
 # 7. [STEP C] 초대형 인프라용 NCCL All-Reduce 융합 분산 집산 헬스 스캔 및 핫플러깅 복구 가동
 python3 hardware_fault_recovery_distributed.py
-```
 
+# 8. [⚡ STEP D] 실전 Llama-3-8B Transformer 4096/14336 매트릭스 0ns 주소 제로카피 어댑터 인프라 가동
+python3 llama3_layer_adapter.py
+```
 
 ---
 

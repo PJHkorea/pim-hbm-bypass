@@ -18,7 +18,7 @@ class PimHardwareAlgebraicGate:
     JAX 컴파일러 렉(Tracer Stall)을 원천 차단하는 엔터프라이즈 가드 레이어 클래스입니다.
     """
 
-       @staticmethod
+    @staticmethod
     @partial(jax.jit, static_argnums=(1,))
     def _enforce_pim_algebraic_insulation_core(raw_pim_telemetry: jax.Array, total_cells: int) -> jax.Array:
         """
@@ -54,7 +54,7 @@ class PimHardwareAlgebraicGate:
         return insulated_output
 
 
-    @classmethod
+       @classmethod
     def enforce_pim_algebraic_insulation(cls, raw_pim_telemetry: jax.Array, total_cells: int) -> jax.Array:
         """
         [🛡️ RUNTIME HOISTED FIREWALL]
@@ -78,36 +78,8 @@ class PimHardwareAlgebraicGate:
                 f"하드웨어 오동작 예방을 위해 주소선 인입을 전격 거부합니다."
             )
             
-        # 호스트 단 방화벽 무결성 판정 통과 시, 안전하게 JIT 가속 코어 기계어 엔진으로 데이터 패스 수행
+        # 호스트 단 방화벽 무결성 판정 통과 시, 모든 대수적 절연 수식이 빌드 완료된 JIT 가속 코어 엔진으로 즉시 전권 이관 및 제어 패스
         return cls._enforce_pim_algebraic_insulation_core(raw_pim_telemetry, total_cells)
-
-        # [1] 부동소수점 오차 가드 장치 전개
-        # 하드웨어 뱅크가 고장 상태를 나타낼 때 출력하는 물리적 데이터 노이즈를 포획합니다.
-        # 최상단 전역 상수를 다이렉트 참조하여 스펙 변경 시 유연성을 확보합니다.
-        target_fault_signal: jax.Array = jnp.array(PIM_HARDWARE_FAULT_VALUE, dtype=raw_pim_telemetry.dtype)
-        error_tolerance_window: jax.Array = jnp.array(PIM_ERROR_THRESHOLD, dtype=raw_pim_telemetry.dtype)
-        
-        # 근접 오차 절대값 연산을 수행하여 미세하게 진동하는 하드웨어 노이즈까지 단 1비트의 유실 없이 검출합니다.
-        absolute_deviation: jax.Array = jnp.abs(raw_pim_telemetry - target_fault_signal)
-        is_hardware_error: jax.Array = absolute_deviation < error_tolerance_window
-
-        # [2] 하드웨어 무결성 플래그 및 수치적 발산 상태(NaN) 검증부 전개
-        # 하드웨어 오동작 비트와 IEEE 754 표준 규격의 NaN(Not a Number) 발산 상태를 병렬 검사합니다.
-        is_nan_detected: jax.Array = jnp.isnan(raw_pim_telemetry)
-        
-        # 조건문 분기를 전면 도살하기 위해 두 불리언 텐서를 하드웨어 비트 레벨의 OR(|) 연산으로 관통 병합합니다.
-        error_gate: jax.Array = is_hardware_error | is_nan_detected
-
-        # [3] XLA 하드웨어 친화적 관통 연산(Mux) 레이어 전개
-        # 실리콘 멀티플렉서 회로와 일대일 매핑되는 XLA 고속 제어 연산자 jnp.where를 전개합니다.
-        fallback_safe_value: jax.Array = jnp.array(0.0, dtype=raw_pim_telemetry.dtype)
-        clean_telemetry: jax.Array = jnp.where(error_gate, fallback_safe_value, raw_pim_telemetry)
-
-        # [4] 대수적 절연 게이트 장치 가동 (PJHkorea 디자인 명세 반영)
-        # 역전파(Backpropagation) 연산 시, 이 지점 위로 오차가 전파되어 미분 사슬이 파괴되는 현상을 완벽히 차단합니다.
-        insulated_output: jax.Array = jax.lax.stop_gradient(clean_telemetry)
-        
-        return insulated_output
 
 
 # ====================================================================

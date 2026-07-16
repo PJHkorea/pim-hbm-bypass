@@ -18,7 +18,7 @@ class PimHardwareAlgebraicGate:
     JAX 컴파일러 렉(Tracer Stall)을 원천 차단하는 엔터프라이즈 가드 레이어 클래스입니다.
     """
 
-    @staticmethod
+       @staticmethod
     @partial(jax.jit, static_argnums=(1,))
     def _enforce_pim_algebraic_insulation_core(raw_pim_telemetry: jax.Array, total_cells: int) -> jax.Array:
         """
@@ -27,15 +27,32 @@ class PimHardwareAlgebraicGate:
         하부 XLA 파이프라인 컴파일러와 직통으로 연결되는 순수 수식 제어 레일입니다.
         런타임 동적 검증문과의 결합 오버헤드를 배제하기 위해 컴파일 유닛을 원형 격리 전개합니다.
         """
-        # [🛠️ 리팩토링 완결]: 런타임 검증 레이어가 외부 호스트 함수로 호이스팅(Hoisting) 이관됨에 따라,
-        # 컴파일 타임에 수치 뼈대 구조(XLA Graph Trace)의 차원 왜곡 유무만 최종 필터링합니다.
+        # [1] 컴파일 타임 뼈대 구조 차원 검증
         assert raw_pim_telemetry.shape[0] == total_cells, (
-            f"[XLA_TRACE_ERROR] 컴파일 유닛 트레이싱 스케일 불일치 감지. "
-            f"Expected: {total_cells}"
+            f"[XLA_TRACE_ERROR] 컴파일 유닛 트레이싱 스케일 불일치 감지. Expected: {total_cells}"
         )
         
-        # [PART 2] 내부 수식 연산부로 연결 (이후 단계에서 결합 전개)
-        return raw_pim_telemetry
+        # [2] 부동소수점 오차 가드 장치 전개 (PART 2 수식 결합)
+        # 하드웨어 뱅크 고장 신호(-999.0)와 미세 진동 노이즈까지 단 1비트 유실 없이 검출
+        target_fault_signal: jax.Array = jnp.array(PIM_HARDWARE_FAULT_VALUE, dtype=raw_pim_telemetry.dtype)
+        error_tolerance_window: jax.Array = jnp.array(PIM_ERROR_THRESHOLD, dtype=raw_pim_telemetry.dtype)
+        
+        absolute_deviation: jax.Array = jnp.abs(raw_pim_telemetry - target_fault_signal)
+        is_hardware_error: jax.Array = absolute_deviation < error_tolerance_window
+
+        # [3] 수치적 발산 상태(NaN) 병렬 검증 및 비트 레벨 OR(|) 관통 병합
+        is_nan_detected: jax.Array = jnp.isnan(raw_pim_telemetry)
+        error_gate: jax.Array = is_hardware_error | is_nan_detected
+
+        # [4] 실리콘 멀티플렉서 회로와 1:1 매핑되는 분기 없는 고속 제어 연산자(Mux) 가동
+        fallback_safe_value: jax.Array = jnp.array(0.0, dtype=raw_pim_telemetry.dtype)
+        clean_telemetry: jax.Array = jnp.where(error_gate, fallback_safe_value, raw_pim_telemetry)
+
+        # [5] 대수적 절연 게이트 장치 가동 (역전파 미분 사슬 도미노 파괴 원천 차단)
+        insulated_output: jax.Array = jax.lax.stop_gradient(clean_telemetry)
+        
+        return insulated_output
+
 
     @classmethod
     def enforce_pim_algebraic_insulation(cls, raw_pim_telemetry: jax.Array, total_cells: int) -> jax.Array:
@@ -64,21 +81,13 @@ class PimHardwareAlgebraicGate:
         # 호스트 단 방화벽 무결성 판정 통과 시, 안전하게 JIT 가속 코어 기계어 엔진으로 데이터 패스 수행
         return cls._enforce_pim_algebraic_insulation_core(raw_pim_telemetry, total_cells)
 
-
-               # ====================================================================
-        # [AOT-WARMUP PYTHON INTERFACE GATING LAYER - REENGINEERED V4]
-        # @file: pim_hardware_gate.py
-        # [PART 2/3]: Algebraic Error Filtering Engine & Computational Barrier Layer
-        # ====================================================================
-
         # [1] 부동소수점 오차 가드 장치 전개
-        # 하드웨어 뱅크가 고장 상태를 나타낼 때 출력하는 -999.0 값의 물리적 데이터 노이즈를 포획합니다.
-        # 입력 가중치 텐서의 정밀도(FP32 등)에 물리적으로 완벽히 싱크를 맞춥니다.
-        target_fault_signal: jax.Array = jnp.array(-999.0, dtype=raw_pim_telemetry.dtype)
-        error_tolerance_window: jax.Array = jnp.array(1e-3, dtype=raw_pim_telemetry.dtype)
+        # 하드웨어 뱅크가 고장 상태를 나타낼 때 출력하는 물리적 데이터 노이즈를 포획합니다.
+        # 최상단 전역 상수를 다이렉트 참조하여 스펙 변경 시 유연성을 확보합니다.
+        target_fault_signal: jax.Array = jnp.array(PIM_HARDWARE_FAULT_VALUE, dtype=raw_pim_telemetry.dtype)
+        error_tolerance_window: jax.Array = jnp.array(PIM_ERROR_THRESHOLD, dtype=raw_pim_telemetry.dtype)
         
-        # 근접 오차 절대값 연산을 수행하여 -999.0001f나 -998.9999f 같이 미세하게 진동하는 하드웨어 노이즈까지
-        # 단 1비트의 유실 없이 물리 영역 내에서 검출합니다.
+        # 근접 오차 절대값 연산을 수행하여 미세하게 진동하는 하드웨어 노이즈까지 단 1비트의 유실 없이 검출합니다.
         absolute_deviation: jax.Array = jnp.abs(raw_pim_telemetry - target_fault_signal)
         is_hardware_error: jax.Array = absolute_deviation < error_tolerance_window
 
@@ -86,19 +95,16 @@ class PimHardwareAlgebraicGate:
         # 하드웨어 오동작 비트와 IEEE 754 표준 규격의 NaN(Not a Number) 발산 상태를 병렬 검사합니다.
         is_nan_detected: jax.Array = jnp.isnan(raw_pim_telemetry)
         
-        # 조건문(if-else) 분기를 전면 도살하기 위해 두 불리언 텐서를 하드웨어 비트 레벨의 OR(|) 연산으로 관통 병합합니다.
-        # 요소별(Element-wise) 연산자가 완벽한 부울 플래그 배열로 고속 벡터화 컴파일되도록 장치를 싱크합니다.
+        # 조건문 분기를 전면 도살하기 위해 두 불리언 텐서를 하드웨어 비트 레벨의 OR(|) 연산으로 관통 병합합니다.
         error_gate: jax.Array = is_hardware_error | is_nan_detected
 
         # [3] XLA 하드웨어 친화적 관통 연산(Mux) 레이어 전개
-        # 하드웨어 스톨(Pipeline Stall)을 유발하는 조건 분기를 소멸시키고, 
         # 실리콘 멀티플렉서 회로와 일대일 매핑되는 XLA 고속 제어 연산자 jnp.where를 전개합니다.
         fallback_safe_value: jax.Array = jnp.array(0.0, dtype=raw_pim_telemetry.dtype)
         clean_telemetry: jax.Array = jnp.where(error_gate, fallback_safe_value, raw_pim_telemetry)
 
         # [4] 대수적 절연 게이트 장치 가동 (PJHkorea 디자인 명세 반영)
-        # 역전파(Backpropagation) 연산 시, 이 지점 위로 오차가 전파되어 미분 사슬(Gradient Chain)이 
-        # 도미노처럼 파괴되는 현상을 완벽히 차단합니다. 수치적 발산 오차를 물리적으로 끊어냅니다.
+        # 역전파(Backpropagation) 연산 시, 이 지점 위로 오차가 전파되어 미분 사슬이 파괴되는 현상을 완벽히 차단합니다.
         insulated_output: jax.Array = jax.lax.stop_gradient(clean_telemetry)
         
         return insulated_output

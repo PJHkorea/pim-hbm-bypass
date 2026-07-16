@@ -19,13 +19,13 @@
 
 - **`LICENSE`**: Apache License 2.0 법적 방화벽 및 특허 보복 방어 조항 명시
 - **`CMakeLists.txt`**: 시스템 가속기 아키텍처 환경과 `pybind11` 컴파일 패스를 자동 추적하여 공유 라이브러리(`.so`)를 사출하는 빌드 오케스트레이터
-- **`pim_hbm_core.cu`**: `alignas(32)` 캐시라인 일치 레이아웃, `__shfl_down_sync` 주소 방화벽 및 `__ldg` 가속 레일이 주입된 무분기 수학 가속 커널 코어 (C++/CUDA)
+- **`pim_hbm_core.cu`**: `alignas(32)` 캐시라인 일치 레이아웃, `__activemask()` 동적 주소 방화벽 및 `__ldg` 가속 레일이 주입된 무분기 수학 가속 커널 코어 (C++/CUDA)
 - **`pim_hardware_gate.py`**: `ShapeDtypeStruct` 가상 추상화 트레이서를 활용해 실재 VRAM 점유 0MB 상태로 XLA 컴파일러 기계어를 영구 고정하는 예열 및 미분 사슬 절연 레이어 (Python/JAX)
 - **`topology_sharding.py`**: 대규모 클러스터 노드별 VRAM 물리 주소선을 가로채어 제로카피 `NamedSharding` 글로벌 분산 매트릭스 뷰를 수립하는 거시적 토폴로지 관제탑 (Python/JAX)
 - **`hardware_fault_recovery.py`**: 분산 가중치 행렬 내 불량 뱅크 백그라운드 스캔 및 비상 백업 풀 주소선을 활용한 실시간 무중단 핫플러깅 스와프 엔진 (Python/JAX)
+- **`hardware_fault_recovery_distributed.py` (🆕)**: 초대형 가속기 인프라를 위한 NCCL All-Reduce 와이어 레벨 융합 집산(Collective) 스캔 및 `np.flatnonzero` 벡터화 결함 적출 복구 엔진 (Python/JAX)
 
 ---
-
 
 ## 🛠️ 고속 구동 및 빌드 지침 (Quick Start)
 
@@ -50,9 +50,10 @@ python3 pim_hardware_gate.py
 # 6. [STEP B] Multi-GPU 거시 분산 샤딩 토폴로지 가상 융합 텐서 가동 
 python3 topology_sharding.py
 
-# 7. [STEP C] 무중단 연속 구동 실리콘 결함 허용 핫플러깅 복구 파이프라인 가동
-python3 hardware_fault_recovery.py
+# 7. [STEP C] 초대형 인프라용 NCCL All-Reduce 융합 분산 집산 헬스 스캔 및 핫플러깅 복구 가동
+python3 hardware_fault_recovery_distributed.py
 ```
+
 
 ---
 
